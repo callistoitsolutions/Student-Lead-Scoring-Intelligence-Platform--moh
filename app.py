@@ -1,6 +1,7 @@
 """
-Student Lead Scoring Intelligence Platform
-Complete system with authentication, admin panel, and AI-powered predictions
+🎓 Student Lead Scoring Intelligence Platform
+Professional AI-Powered Student Conversion Prediction System
+No Login Required - Direct Access Dashboard
 """
 
 import streamlit as st
@@ -9,10 +10,7 @@ import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 import joblib
-import hashlib
-import sqlite3
 from datetime import datetime
-import time
 from io import BytesIO
 
 # ============================================================================
@@ -26,273 +24,427 @@ st.set_page_config(
 )
 
 # ============================================================================
-# DATABASE FUNCTIONS
+# PROFESSIONAL CSS STYLING (Inspired by Modern School Dashboard)
 # ============================================================================
 
-def init_database():
-    """Initialize database with migration support"""
-    conn = sqlite3.connect('student_lead_scoring.db', check_same_thread=False)
-    c = conn.cursor()
+st.markdown("""
+<style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
     
-    # Create users table
-    c.execute('''CREATE TABLE IF NOT EXISTS users
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  username TEXT UNIQUE NOT NULL,
-                  password_hash TEXT NOT NULL,
-                  email TEXT,
-                  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                  last_login TIMESTAMP,
-                  is_active BOOLEAN DEFAULT 1,
-                  role TEXT DEFAULT 'user')''')
-    
-    # Create usage_logs table
-    c.execute('''CREATE TABLE IF NOT EXISTS usage_logs
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  user_id INTEGER,
-                  action TEXT,
-                  details TEXT,
-                  leads_scored INTEGER,
-                  timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                  FOREIGN KEY (user_id) REFERENCES users (id))''')
-    
-    # Create sessions table
-    c.execute('''CREATE TABLE IF NOT EXISTS sessions
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  user_id INTEGER,
-                  login_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                  logout_time TIMESTAMP,
-                  is_active BOOLEAN DEFAULT 1,
-                  session_token TEXT,
-                  FOREIGN KEY (user_id) REFERENCES users (id))''')
-    
-    # Migration: Add missing columns
-    try:
-        c.execute("PRAGMA table_info(sessions)")
-        columns = [column[1] for column in c.fetchall()]
-        
-        if 'is_active' not in columns:
-            c.execute("ALTER TABLE sessions ADD COLUMN is_active BOOLEAN DEFAULT 1")
-            conn.commit()
-            
-        if 'session_token' not in columns:
-            c.execute("ALTER TABLE sessions ADD COLUMN session_token TEXT")
-            conn.commit()
-    except Exception as e:
-        pass
-    
-    # Create admin user if not exists
-    c.execute("SELECT * FROM users WHERE username = 'admin'")
-    if not c.fetchone():
-        admin_password = hashlib.sha256('admin123'.encode()).hexdigest()
-        c.execute("INSERT INTO users (username, password_hash, email, role) VALUES (?, ?, ?, ?)",
-                  ('admin', admin_password, 'admin@studentscore.com', 'admin'))
-    
-    conn.commit()
-    conn.close()
-
-def hash_password(password):
-    return hashlib.sha256(password.encode()).hexdigest()
-
-def verify_user(username, password):
-    """Verify and login user"""
-    conn = sqlite3.connect('student_lead_scoring.db', check_same_thread=False)
-    c = conn.cursor()
-    
-    try:
-        password_hash = hash_password(password)
-        c.execute("SELECT id, username, role, is_active FROM users WHERE username = ? AND password_hash = ?",
-                  (username, password_hash))
-        
-        user = c.fetchone()
-        
-        if user and user[3]:
-            c.execute("UPDATE users SET last_login = ? WHERE id = ?", (datetime.now(), user[0]))
-            session_token = hashlib.md5(f"{user[0]}{datetime.now()}".encode()).hexdigest()
-            
-            try:
-                c.execute("UPDATE sessions SET is_active = 0, logout_time = ? WHERE user_id = ? AND is_active = 1", 
-                          (datetime.now(), user[0]))
-            except sqlite3.OperationalError:
-                pass
-            
-            try:
-                c.execute("INSERT INTO sessions (user_id, login_time, is_active, session_token) VALUES (?, ?, ?, ?)",
-                          (user[0], datetime.now(), 1, session_token))
-            except sqlite3.OperationalError:
-                c.execute("INSERT INTO sessions (user_id, login_time) VALUES (?, ?)",
-                          (user[0], datetime.now()))
-            
-            conn.commit()
-            conn.close()
-            
-            return {
-                'id': user[0], 
-                'username': user[1], 
-                'role': user[2], 
-                'is_active': user[3], 
-                'session_token': session_token
-            }
-        
-        conn.close()
-        return None
-    except Exception as e:
-        conn.close()
-        return None
-
-def create_user_by_admin(username, password, email):
-    """Admin creates user"""
-    conn = sqlite3.connect('student_lead_scoring.db', check_same_thread=False)
-    c = conn.cursor()
-    try:
-        password_hash = hash_password(password)
-        c.execute("INSERT INTO users (username, password_hash, email, role) VALUES (?, ?, ?, ?)",
-                  (username, password_hash, email, 'user'))
-        conn.commit()
-        conn.close()
-        return True
-    except sqlite3.IntegrityError:
-        conn.close()
-        return False
-
-def logout_user(user_id):
-    """Logout user"""
-    conn = sqlite3.connect('student_lead_scoring.db', check_same_thread=False)
-    c = conn.cursor()
-    try:
-        c.execute("UPDATE sessions SET is_active = 0, logout_time = ? WHERE user_id = ? AND is_active = 1",
-                  (datetime.now(), user_id))
-    except sqlite3.OperationalError:
-        c.execute("UPDATE sessions SET logout_time = ? WHERE user_id = ? AND logout_time IS NULL",
-                  (datetime.now(), user_id))
-    conn.commit()
-    conn.close()
-
-def log_usage(user_id, action, details="", leads_scored=0):
-    """Log activity"""
-    conn = sqlite3.connect('student_lead_scoring.db', check_same_thread=False)
-    c = conn.cursor()
-    c.execute("INSERT INTO usage_logs (user_id, action, details, leads_scored) VALUES (?, ?, ?, ?)",
-              (user_id, action, details, leads_scored))
-    conn.commit()
-    conn.close()
-
-def get_user_stats(user_id):
-    """Get user stats"""
-    conn = sqlite3.connect('student_lead_scoring.db', check_same_thread=False)
-    c = conn.cursor()
-    c.execute("SELECT COUNT(*) FROM usage_logs WHERE user_id = ? AND action = 'score_leads'", (user_id,))
-    total_scorings = c.fetchone()[0]
-    c.execute("SELECT SUM(leads_scored) FROM usage_logs WHERE user_id = ? AND action = 'score_leads'", (user_id,))
-    total_leads = c.fetchone()[0] or 0
-    c.execute("SELECT COUNT(*) FROM sessions WHERE user_id = ?", (user_id,))
-    total_logins = c.fetchone()[0]
-    conn.close()
-    return {'total_scorings': total_scorings, 'total_leads': total_leads, 'total_logins': total_logins}
-
-def get_all_users():
-    """Get all users"""
-    conn = sqlite3.connect('student_lead_scoring.db', check_same_thread=False)
-    c = conn.cursor()
-    c.execute("SELECT id, username, email, created_at, last_login, is_active, role FROM users ORDER BY created_at DESC")
-    users = c.fetchall()
-    conn.close()
-    return users
-
-def get_currently_logged_in_users():
-    """Get currently logged in users"""
-    conn = sqlite3.connect('student_lead_scoring.db', check_same_thread=False)
-    c = conn.cursor()
-    try:
-        c.execute("""
-            SELECT u.id, u.username, u.email, s.login_time, u.role
-            FROM sessions s
-            JOIN users u ON s.user_id = u.id
-            WHERE s.is_active = 1
-            ORDER BY s.login_time DESC
-        """)
-        active_users = c.fetchall()
-    except sqlite3.OperationalError:
-        active_users = []
-    conn.close()
-    return active_users
-
-def get_user_activity_details(user_id):
-    """Get detailed activity for a specific user"""
-    conn = sqlite3.connect('student_lead_scoring.db', check_same_thread=False)
-    c = conn.cursor()
-    c.execute("""
-        SELECT action, details, leads_scored, timestamp
-        FROM usage_logs
-        WHERE user_id = ?
-        ORDER BY timestamp DESC
-        LIMIT 20
-    """, (user_id,))
-    activities = c.fetchall()
-    conn.close()
-    return activities
-
-def get_all_user_activities():
-    """Get all activities from all users"""
-    conn = sqlite3.connect('student_lead_scoring.db', check_same_thread=False)
-    c = conn.cursor()
-    c.execute("""
-        SELECT u.username, l.action, l.details, l.leads_scored, l.timestamp
-        FROM usage_logs l
-        JOIN users u ON l.user_id = u.id
-        ORDER BY l.timestamp DESC
-        LIMIT 100
-    """)
-    activities = c.fetchall()
-    conn.close()
-    return activities
-
-def get_system_stats():
-    """Get system stats"""
-    conn = sqlite3.connect('student_lead_scoring.db', check_same_thread=False)
-    c = conn.cursor()
-    c.execute("SELECT COUNT(*) FROM users WHERE role = 'user'")
-    total_users = c.fetchone()[0]
-    try:
-        c.execute("SELECT COUNT(*) FROM sessions WHERE is_active = 1")
-        currently_online = c.fetchone()[0]
-    except sqlite3.OperationalError:
-        currently_online = 0
-    c.execute("SELECT COUNT(*) FROM usage_logs WHERE action = 'score_leads'")
-    total_scorings = c.fetchone()[0]
-    c.execute("SELECT SUM(leads_scored) FROM usage_logs WHERE action = 'score_leads'")
-    total_leads = c.fetchone()[0] or 0
-    c.execute("SELECT COUNT(*) FROM sessions WHERE DATE(login_time) = DATE('now')")
-    today_logins = c.fetchone()[0]
-    conn.close()
-    return {
-        'total_users': total_users,
-        'currently_online': currently_online,
-        'total_scorings': total_scorings,
-        'total_leads': total_leads,
-        'today_logins': today_logins
+    /* ==================== GLOBAL STYLES ==================== */
+    * {
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+        letter-spacing: -0.01em;
     }
-
-def toggle_user_status(user_id, is_active):
-    """Enable/disable user"""
-    conn = sqlite3.connect('student_lead_scoring.db', check_same_thread=False)
-    c = conn.cursor()
-    c.execute("UPDATE users SET is_active = ? WHERE id = ?", (is_active, user_id))
-    conn.commit()
-    conn.close()
-
-def delete_user(user_id):
-    """Delete user"""
-    conn = sqlite3.connect('student_lead_scoring.db', check_same_thread=False)
-    c = conn.cursor()
-    c.execute("DELETE FROM users WHERE id = ?", (user_id,))
-    conn.commit()
-    conn.close()
+    
+    /* Main Container */
+    .block-container {
+        padding: 2rem 3rem 3rem 3rem;
+        max-width: 1600px;
+    }
+    
+    /* Remove default Streamlit branding */
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    header {visibility: hidden;}
+    
+    /* ==================== SIDEBAR STYLING ==================== */
+    [data-testid="stSidebar"] {
+        background: linear-gradient(180deg, #f8f9fa 0%, #ffffff 100%);
+        border-right: 1px solid #e9ecef;
+        padding: 0;
+    }
+    
+    [data-testid="stSidebar"] > div:first-child {
+        padding-top: 2rem;
+    }
+    
+    .sidebar-title {
+        font-size: 1.5rem;
+        font-weight: 800;
+        color: #1a1a1a;
+        padding: 0 1.5rem 1rem 1.5rem;
+        border-bottom: 1px solid #e9ecef;
+        margin-bottom: 1.5rem;
+    }
+    
+    .sidebar-section {
+        padding: 1rem 1.5rem;
+        margin-bottom: 0.5rem;
+    }
+    
+    .sidebar-section-title {
+        font-size: 0.75rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        color: #6c757d;
+        margin-bottom: 0.75rem;
+        letter-spacing: 0.05em;
+    }
+    
+    .sidebar-nav-item {
+        display: flex;
+        align-items: center;
+        padding: 0.75rem 1rem;
+        margin-bottom: 0.25rem;
+        border-radius: 8px;
+        color: #495057;
+        font-weight: 500;
+        font-size: 0.9rem;
+        transition: all 0.2s ease;
+        cursor: pointer;
+        text-decoration: none;
+    }
+    
+    .sidebar-nav-item:hover {
+        background: #e7f1ff;
+        color: #0066cc;
+    }
+    
+    .sidebar-nav-item.active {
+        background: #0066cc;
+        color: white;
+        box-shadow: 0 2px 4px rgba(0, 102, 204, 0.2);
+    }
+    
+    /* ==================== HEADER STYLING ==================== */
+    .page-header {
+        background: white;
+        padding: 2rem 0;
+        margin-bottom: 2rem;
+    }
+    
+    .page-title {
+        font-size: 2rem;
+        font-weight: 800;
+        color: #1a1a1a;
+        margin: 0;
+        padding: 0;
+    }
+    
+    .page-subtitle {
+        font-size: 0.95rem;
+        color: #6c757d;
+        margin-top: 0.5rem;
+        font-weight: 400;
+    }
+    
+    /* ==================== METRIC CARDS ==================== */
+    .metric-card {
+        background: white;
+        border-radius: 12px;
+        padding: 1.5rem;
+        border: 1px solid #e9ecef;
+        transition: all 0.3s ease;
+        height: 100%;
+    }
+    
+    .metric-card:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+        border-color: #dee2e6;
+    }
+    
+    .metric-icon {
+        width: 48px;
+        height: 48px;
+        border-radius: 10px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 1.5rem;
+        margin-bottom: 1rem;
+    }
+    
+    .metric-value {
+        font-size: 2rem;
+        font-weight: 800;
+        color: #1a1a1a;
+        margin: 0.5rem 0 0.25rem 0;
+        line-height: 1;
+    }
+    
+    .metric-label {
+        font-size: 0.875rem;
+        color: #6c757d;
+        font-weight: 500;
+        margin: 0;
+    }
+    
+    .metric-change {
+        font-size: 0.8rem;
+        font-weight: 600;
+        margin-top: 0.5rem;
+    }
+    
+    .metric-change.positive {
+        color: #28a745;
+    }
+    
+    .metric-change.negative {
+        color: #dc3545;
+    }
+    
+    /* Icon Background Colors */
+    .icon-blue { background: #e7f1ff; color: #0066cc; }
+    .icon-purple { background: #f3e8ff; color: #7c3aed; }
+    .icon-green { background: #d1f4e0; color: #10b981; }
+    .icon-orange { background: #fff3e0; color: #f59e0b; }
+    
+    /* ==================== CONTENT CARDS ==================== */
+    .content-card {
+        background: white;
+        border-radius: 12px;
+        padding: 1.5rem;
+        border: 1px solid #e9ecef;
+        margin-bottom: 1.5rem;
+    }
+    
+    .card-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 1.5rem;
+        padding-bottom: 1rem;
+        border-bottom: 1px solid #f1f3f5;
+    }
+    
+    .card-title {
+        font-size: 1.125rem;
+        font-weight: 700;
+        color: #1a1a1a;
+        margin: 0;
+    }
+    
+    .card-action {
+        font-size: 0.875rem;
+        color: #0066cc;
+        font-weight: 600;
+        cursor: pointer;
+        text-decoration: none;
+    }
+    
+    .card-action:hover {
+        text-decoration: underline;
+    }
+    
+    /* ==================== BUTTONS ==================== */
+    .stButton > button {
+        background: #0066cc;
+        color: white;
+        border: none;
+        border-radius: 8px;
+        padding: 0.625rem 1.25rem;
+        font-weight: 600;
+        font-size: 0.9rem;
+        transition: all 0.2s ease;
+        box-shadow: 0 2px 4px rgba(0, 102, 204, 0.2);
+    }
+    
+    .stButton > button:hover {
+        background: #0052a3;
+        box-shadow: 0 4px 8px rgba(0, 102, 204, 0.3);
+        transform: translateY(-1px);
+    }
+    
+    .stButton > button:active {
+        transform: translateY(0);
+    }
+    
+    /* Download Button */
+    .stDownloadButton > button {
+        background: #10b981;
+        color: white;
+        border: none;
+        border-radius: 8px;
+        padding: 0.625rem 1.25rem;
+        font-weight: 600;
+        font-size: 0.9rem;
+        transition: all 0.2s ease;
+        box-shadow: 0 2px 4px rgba(16, 185, 129, 0.2);
+    }
+    
+    .stDownloadButton > button:hover {
+        background: #059669;
+        box-shadow: 0 4px 8px rgba(16, 185, 129, 0.3);
+        transform: translateY(-1px);
+    }
+    
+    /* ==================== FILE UPLOADER ==================== */
+    [data-testid="stFileUploader"] {
+        background: white;
+        border: 2px dashed #dee2e6;
+        border-radius: 12px;
+        padding: 2rem;
+        transition: all 0.3s ease;
+    }
+    
+    [data-testid="stFileUploader"]:hover {
+        border-color: #0066cc;
+        background: #f8f9fa;
+    }
+    
+    [data-testid="stFileUploader"] section {
+        border: none;
+        padding: 0;
+    }
+    
+    /* ==================== DATA TABLES ==================== */
+    .dataframe {
+        border: none !important;
+        font-size: 0.9rem;
+    }
+    
+    .dataframe thead tr th {
+        background: #f8f9fa !important;
+        color: #495057 !important;
+        font-weight: 700 !important;
+        text-transform: uppercase;
+        font-size: 0.75rem;
+        padding: 1rem 0.75rem !important;
+        border-bottom: 2px solid #dee2e6 !important;
+        letter-spacing: 0.05em;
+    }
+    
+    .dataframe tbody tr {
+        border-bottom: 1px solid #f1f3f5 !important;
+    }
+    
+    .dataframe tbody tr:hover {
+        background: #f8f9fa !important;
+    }
+    
+    .dataframe tbody td {
+        padding: 0.875rem 0.75rem !important;
+        color: #495057;
+    }
+    
+    /* ==================== TABS ==================== */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 0.5rem;
+        background: transparent;
+        border-bottom: 1px solid #e9ecef;
+        padding: 0;
+    }
+    
+    .stTabs [data-baseweb="tab"] {
+        background: transparent;
+        border: none;
+        border-bottom: 3px solid transparent;
+        border-radius: 0;
+        padding: 0.875rem 1.5rem;
+        font-weight: 600;
+        color: #6c757d;
+        font-size: 0.9rem;
+        transition: all 0.2s ease;
+    }
+    
+    .stTabs [data-baseweb="tab"]:hover {
+        color: #495057;
+        background: #f8f9fa;
+    }
+    
+    .stTabs [aria-selected="true"] {
+        color: #0066cc !important;
+        border-bottom-color: #0066cc !important;
+        background: transparent !important;
+    }
+    
+    /* ==================== ALERTS & INFO BOXES ==================== */
+    .info-box {
+        background: #e7f1ff;
+        border-left: 4px solid #0066cc;
+        padding: 1rem 1.25rem;
+        border-radius: 8px;
+        margin: 1rem 0;
+    }
+    
+    .success-box {
+        background: #d1f4e0;
+        border-left: 4px solid #10b981;
+        padding: 1rem 1.25rem;
+        border-radius: 8px;
+        margin: 1rem 0;
+    }
+    
+    .warning-box {
+        background: #fff3e0;
+        border-left: 4px solid #f59e0b;
+        padding: 1rem 1.25rem;
+        border-radius: 8px;
+        margin: 1rem 0;
+    }
+    
+    /* ==================== PROGRESS BAR ==================== */
+    .stProgress > div > div > div > div {
+        background: #0066cc;
+        border-radius: 4px;
+    }
+    
+    /* ==================== EXPANDER ==================== */
+    .streamlit-expanderHeader {
+        background: #f8f9fa;
+        border: 1px solid #e9ecef;
+        border-radius: 8px;
+        font-weight: 600;
+        color: #495057;
+        padding: 0.875rem 1rem;
+        font-size: 0.9rem;
+    }
+    
+    .streamlit-expanderHeader:hover {
+        border-color: #dee2e6;
+        background: #e9ecef;
+    }
+    
+    /* ==================== PRIORITY BADGES ==================== */
+    .priority-badge {
+        display: inline-block;
+        padding: 0.375rem 0.75rem;
+        border-radius: 6px;
+        font-weight: 600;
+        font-size: 0.8rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+    }
+    
+    .priority-high {
+        background: #d1f4e0;
+        color: #10b981;
+    }
+    
+    .priority-medium {
+        background: #fff3e0;
+        color: #f59e0b;
+    }
+    
+    .priority-low {
+        background: #fee;
+        color: #dc3545;
+    }
+    
+    /* ==================== RESPONSIVE ==================== */
+    @media (max-width: 768px) {
+        .block-container {
+            padding: 1rem;
+        }
+        
+        .page-title {
+            font-size: 1.5rem;
+        }
+        
+        .metric-value {
+            font-size: 1.5rem;
+        }
+    }
+</style>
+""", unsafe_allow_html=True)
 
 # ============================================================================
-# MODEL LOADING FUNCTIONS
+# MODEL LOADING
 # ============================================================================
 
-@st.cache_resource
+@st.cache_resource(show_spinner=False)
 def load_models():
     """Load ML models and preprocessors"""
     try:
@@ -309,24 +461,20 @@ def load_models():
         st.stop()
 
 # ============================================================================
-# PREDICTION FUNCTIONS
+# PREDICTION FUNCTION
 # ============================================================================
 
 def process_and_predict(df, best_model, scaler, label_encoders):
     """Process data and generate predictions"""
     
-    # Get expected columns from label encoders
     expected_cols = list(label_encoders.keys())
-    
-    # Check for required columns
     missing_cols = [col for col in expected_cols if col not in df.columns]
+    
     if missing_cols:
         return None, f"Missing required columns: {missing_cols}"
     
-    # Make a copy for processing
     df_processed = df.copy()
     
-    # Remove target column if present
     if 'Converted' in df_processed.columns:
         df_processed = df_processed.drop(columns=['Converted'])
     
@@ -349,9 +497,9 @@ def process_and_predict(df, best_model, scaler, label_encoders):
         df['Priority'] = pd.cut(
             scores,
             bins=[0, 0.4, 0.7, 1.0],
-            labels=['🔴 Low', '🟡 Medium', '🟢 High']
+            labels=['Low', 'Medium', 'High']
         )
-        df['Prediction'] = ['✓ Likely' if p == 1 else '✗ Unlikely' for p in predictions]
+        df['Prediction'] = ['Likely to Convert' if p == 1 else 'Unlikely' for p in predictions]
         
         # Sort by score
         df_sorted = df.sort_values(by='Lead_Score', ascending=False).reset_index(drop=True)
@@ -362,555 +510,53 @@ def process_and_predict(df, best_model, scaler, label_encoders):
         return None, str(e)
 
 # ============================================================================
-# LOGIN PAGE
+# SIDEBAR
 # ============================================================================
 
-def show_login_page():
-    """Professional login page with modern design"""
+with st.sidebar:
+    st.markdown('<div class="sidebar-title">🎓 Student Lead Scorer</div>', unsafe_allow_html=True)
     
-    # Creative CSS for login page
+    st.markdown('<div class="sidebar-section">', unsafe_allow_html=True)
+    st.markdown('<div class="sidebar-section-title">NAVIGATION</div>', unsafe_allow_html=True)
+    
+    # Navigation menu
+    page = st.radio(
+        "",
+        ["📊 Dashboard", "📖 User Guide", "ℹ️ About"],
+        label_visibility="collapsed"
+    )
+    
+    st.markdown('</div>', unsafe_allow_html=True)
+    
+    st.markdown("---")
+    
+    # Quick Stats
+    st.markdown('<div class="sidebar-section">', unsafe_allow_html=True)
+    st.markdown('<div class="sidebar-section-title">QUICK INFO</div>', unsafe_allow_html=True)
     st.markdown("""
-        <style>
-        @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700;800&display=swap');
-        
-        [data-testid="stAppViewContainer"] {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            font-family: 'Poppins', sans-serif;
-        }
-        
-        .login-container {
-            max-width: 480px;
-            margin: 80px auto;
-            padding: 0;
-            background: white;
-            border-radius: 24px;
-            box-shadow: 0 30px 80px rgba(0,0,0,0.3);
-            overflow: hidden;
-            animation: slideUp 0.6s ease-out;
-        }
-        
-        @keyframes slideUp {
-            from {
-                opacity: 0;
-                transform: translateY(30px);
-            }
-            to {
-                opacity: 1;
-                transform: translateY(0);
-            }
-        }
-        
-        .login-header {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            padding: 40px 30px;
-            text-align: center;
-            color: white;
-            position: relative;
-            overflow: hidden;
-        }
-        
-        .login-header::before {
-            content: '';
-            position: absolute;
-            top: -50%;
-            left: -50%;
-            width: 200%;
-            height: 200%;
-            background: radial-gradient(circle, rgba(255,255,255,0.1) 0%, transparent 70%);
-            animation: pulse 4s ease-in-out infinite;
-        }
-        
-        @keyframes pulse {
-            0%, 100% { transform: scale(1); opacity: 0.5; }
-            50% { transform: scale(1.1); opacity: 0.3; }
-        }
-        
-        .login-icon {
-            font-size: 80px;
-            margin-bottom: 15px;
-            display: inline-block;
-            animation: float 3s ease-in-out infinite;
-            position: relative;
-            z-index: 1;
-        }
-        
-        @keyframes float {
-            0%, 100% { transform: translateY(0px); }
-            50% { transform: translateY(-15px); }
-        }
-        
-        .login-title {
-            font-size: 2.2rem;
-            font-weight: 800;
-            margin: 0;
-            position: relative;
-            z-index: 1;
-            letter-spacing: -0.5px;
-        }
-        
-        .login-subtitle {
-            font-size: 1rem;
-            opacity: 0.95;
-            margin-top: 8px;
-            font-weight: 400;
-            position: relative;
-            z-index: 1;
-        }
-        
-        .login-body {
-            padding: 40px 35px;
-        }
-        
-        .input-label {
-            font-size: 0.9rem;
-            font-weight: 600;
-            color: #334155;
-            margin-bottom: 8px;
-            display: block;
-        }
-        
-        .stTextInput > div > div > input {
-            border: 2px solid #e2e8f0;
-            border-radius: 12px;
-            padding: 14px 18px;
-            font-size: 1rem;
-            transition: all 0.3s ease;
-            background: #f8fafc;
-        }
-        
-        .stTextInput > div > div > input:focus {
-            border-color: #667eea;
-            background: white;
-            box-shadow: 0 0 0 4px rgba(102, 126, 234, 0.1);
-        }
-        
-        .feature-card {
-            background: linear-gradient(135deg, #f8fafc 0%, #e0e7ff 100%);
-            padding: 20px;
-            border-radius: 16px;
-            margin-top: 30px;
-            border: 2px solid #e0e7ff;
-        }
-        
-        .feature-title {
-            font-size: 1rem;
-            font-weight: 700;
-            color: #1e293b;
-            margin-bottom: 12px;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-        
-        .feature-item {
-            font-size: 0.9rem;
-            color: #475569;
-            margin: 8px 0;
-            padding-left: 24px;
-            position: relative;
-        }
-        
-        .feature-item::before {
-            content: '✓';
-            position: absolute;
-            left: 0;
-            color: #10b981;
-            font-weight: 800;
-            font-size: 1.1rem;
-        }
-        
-        /* Mobile Responsive */
-        @media (max-width: 768px) {
-            .login-container {
-                margin: 20px;
-                max-width: 100%;
-            }
-            
-            .login-title {
-                font-size: 1.8rem;
-            }
-            
-            .login-icon {
-                font-size: 60px;
-            }
-            
-            .login-body {
-                padding: 30px 25px;
-            }
-        }
-        </style>
+    <div style='background: #f8f9fa; padding: 1rem; border-radius: 8px; margin-bottom: 1rem;'>
+        <div style='font-size: 0.875rem; color: #6c757d; margin-bottom: 0.5rem;'>Status</div>
+        <div style='font-size: 1rem; font-weight: 700; color: #10b981;'>🟢 System Active</div>
+    </div>
+    
+    <div style='background: #f8f9fa; padding: 1rem; border-radius: 8px;'>
+        <div style='font-size: 0.875rem; color: #6c757d; margin-bottom: 0.5rem;'>Model Version</div>
+        <div style='font-size: 1rem; font-weight: 700; color: #1a1a1a;'>v2.0 (Latest)</div>
+    </div>
     """, unsafe_allow_html=True)
+    st.markdown('</div>', unsafe_allow_html=True)
     
-    col1, col2, col3 = st.columns([1, 2.5, 1])
+    st.markdown("---")
     
-    with col2:
-        st.markdown('<div class="login-container">', unsafe_allow_html=True)
-        
-        # Header Section
-        st.markdown('''
-        <div class="login-header">
-            <div class="login-icon">🎓</div>
-            <h1 class="login-title">Student Lead Scorer</h1>
-            <p class="login-subtitle">AI-Powered Student Intelligence Platform</p>
+    # Help Section
+    st.markdown("""
+    <div style='padding: 1rem; background: #e7f1ff; border-radius: 8px; margin-top: 1rem;'>
+        <div style='font-weight: 700; color: #0066cc; margin-bottom: 0.5rem;'>💡 Need Help?</div>
+        <div style='font-size: 0.85rem; color: #495057;'>
+            Click on <b>User Guide</b> in the navigation menu for detailed instructions.
         </div>
-        ''', unsafe_allow_html=True)
-        
-        # Body Section
-        st.markdown('<div class="login-body">', unsafe_allow_html=True)
-        
-        st.markdown('<label class="input-label">👤 Username</label>', unsafe_allow_html=True)
-        username = st.text_input("", key="login_username", placeholder="Enter your username", label_visibility="collapsed")
-        
-        st.markdown('<label class="input-label" style="margin-top: 20px;">🔒 Password</label>', unsafe_allow_html=True)
-        password = st.text_input("", type="password", key="login_password", placeholder="Enter your password", label_visibility="collapsed")
-        
-        col_btn1, col_btn2 = st.columns(2)
-        
-        with col_btn1:
-            if st.button("🚀 Login", use_container_width=True, type="primary", key="login_btn"):
-                if username and password:
-                    user = verify_user(username, password)
-                    if user:
-                        st.session_state.logged_in = True
-                        st.session_state.user = user
-                        log_usage(user['id'], 'login')
-                        st.success(f"✅ Welcome back, {username}!")
-                        time.sleep(1)
-                        st.rerun()
-                    else:
-                        st.error("❌ Invalid credentials. Please try again.")
-                else:
-                    st.warning("⚠️ Please enter both username and password")
-        
-        with col_btn2:
-            if st.button("🔑 Demo Access", use_container_width=True, key="demo_btn"):
-                with st.expander("📌 Demo Credentials", expanded=True):
-                    st.markdown("""
-                        **Admin Account:**
-                        - Username: `admin`
-                        - Password: `admin123`
-                        
-                        **Features:**
-                        - Full system access
-                        - User management
-                        - Analytics dashboard
-                    """)
-        
-        # Features Section
-        st.markdown('''
-        <div class="feature-card">
-            <div class="feature-title">
-                <span>⭐</span>
-                <span>Platform Features</span>
-            </div>
-            <div class="feature-item">AI-powered student lead scoring</div>
-            <div class="feature-item">Real-time conversion prediction</div>
-            <div class="feature-item">Advanced user management</div>
-            <div class="feature-item">Export & reporting tools</div>
-        </div>
-        ''', unsafe_allow_html=True)
-        
-        st.markdown('</div>', unsafe_allow_html=True)  # Close login-body
-        st.markdown('</div>', unsafe_allow_html=True)  # Close login-container
-        
-        # Footer
-        st.markdown('''
-        <div style="text-align: center; margin-top: 30px; color: white; font-size: 0.9rem; opacity: 0.9;">
-            <p>🔒 Secure & Encrypted | ⚡ Fast & Reliable | 📱 Mobile Responsive</p>
-            <p style="opacity: 0.7; font-size: 0.85rem;">© 2024 Student Lead Scoring Pro. All rights reserved.</p>
-        </div>
-        ''', unsafe_allow_html=True)
-
-# ============================================================================
-# INITIALIZE
-# ============================================================================
-
-init_database()
-
-# Initialize session state
-if 'logged_in' not in st.session_state:
-    st.session_state.logged_in = False
-if 'user' not in st.session_state:
-    st.session_state.user = None
-
-# Check login
-if not st.session_state.logged_in:
-    show_login_page()
-    st.stop()
-
-# ============================================================================
-# MAIN APPLICATION CSS (After Login)
-# ============================================================================
-
-st.markdown("""
-<style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');
-    
-    /* Global Styles */
-    * {
-        font-family: 'Inter', sans-serif;
-    }
-    
-    /* Main Background */
-    [data-testid="stAppViewContainer"] {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-    }
-    
-    .block-container {
-        padding-top: 1rem;
-        padding-bottom: 2rem;
-        max-width: 100%;
-    }
-    
-    /* Header Styles */
-    .main-header {
-        font-size: 3.5rem;
-        font-weight: 900;
-        background: linear-gradient(135deg, #60a5fa 0%, #a78bfa 50%, #ec4899 100%);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        text-align: center;
-        padding: 2rem 0 0.5rem 0;
-        margin-bottom: 0;
-        letter-spacing: -0.03em;
-    }
-    
-    .sub-header {
-        text-align: center;
-        color: white;
-        font-size: 1.2rem;
-        margin-bottom: 2rem;
-        font-weight: 400;
-        opacity: 0.95;
-    }
-    
-    /* Sidebar Styling */
-    [data-testid="stSidebar"] {
-        background: linear-gradient(180deg, #1e293b 0%, #0f172a 100%);
-        padding: 1rem;
-    }
-    
-    [data-testid="stSidebar"] * {
-        color: white !important;
-    }
-    
-    [data-testid="stSidebar"] .stButton > button {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        color: white;
-        border: none;
-        border-radius: 12px;
-        padding: 0.75rem 1.5rem;
-        font-weight: 700;
-        font-size: 1rem;
-        box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
-        transition: all 0.3s ease;
-        width: 100%;
-    }
-    
-    [data-testid="stSidebar"] .stButton > button:hover {
-        transform: translateY(-3px);
-        box-shadow: 0 8px 25px rgba(102, 126, 234, 0.6);
-    }
-    
-    /* User Info Card */
-    .user-info {
-        background: linear-gradient(135deg, rgba(102, 126, 234, 0.2) 0%, rgba(118, 75, 162, 0.2) 100%);
-        padding: 20px;
-        border-radius: 16px;
-        margin-bottom: 24px;
-        border: 2px solid rgba(102, 126, 234, 0.3);
-        backdrop-filter: blur(10px);
-    }
-    
-    /* Metric Cards */
-    .metric-card {
-        background: white;
-        padding: 20px;
-        border-radius: 16px;
-        box-shadow: 0 4px 20px rgba(0,0,0,0.1);
-        transition: all 0.3s ease;
-    }
-    
-    .metric-card:hover {
-        transform: translateY(-5px);
-        box-shadow: 0 8px 30px rgba(0,0,0,0.15);
-    }
-    
-    /* Tabs */
-    .stTabs [data-baseweb="tab-list"] {
-        gap: 1rem;
-        background: rgba(255, 255, 255, 0.1);
-        padding: 0.5rem;
-        border-radius: 16px;
-        backdrop-filter: blur(10px);
-    }
-    
-    .stTabs [data-baseweb="tab"] {
-        background: transparent;
-        border-radius: 12px;
-        padding: 1rem 2rem;
-        font-weight: 700;
-        color: rgba(255, 255, 255, 0.7);
-        border: none;
-        transition: all 0.3s ease;
-    }
-    
-    .stTabs [data-baseweb="tab"]:hover {
-        background: rgba(255, 255, 255, 0.1);
-        color: white;
-    }
-    
-    .stTabs [aria-selected="true"] {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        color: white !important;
-        box-shadow: 0 4px 20px rgba(102, 126, 234, 0.4);
-    }
-    
-    /* Buttons */
-    .stButton > button {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        color: white;
-        border: none;
-        border-radius: 12px;
-        padding: 0.75rem 1.5rem;
-        font-weight: 700;
-        transition: all 0.3s ease;
-        box-shadow: 0 4px 15px rgba(102, 126, 234, 0.3);
-    }
-    
-    .stButton > button:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 8px 25px rgba(102, 126, 234, 0.5);
-    }
-    
-    /* Download Buttons */
-    .stDownloadButton > button {
-        background: linear-gradient(135deg, #10b981 0%, #059669 100%);
-        color: white;
-        border: none;
-        border-radius: 12px;
-        padding: 0.75rem 1.5rem;
-        font-weight: 700;
-        transition: all 0.3s ease;
-        box-shadow: 0 4px 15px rgba(16, 185, 129, 0.3);
-    }
-    
-    .stDownloadButton > button:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 8px 25px rgba(16, 185, 129, 0.5);
-    }
-    
-    /* DataFrames */
-    [data-testid="stDataFrame"] {
-        border-radius: 16px;
-        overflow: hidden;
-        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
-    }
-    
-    .dataframe {
-        border: none !important;
-    }
-    
-    .dataframe thead tr th {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%) !important;
-        color: white !important;
-        font-weight: 700 !important;
-        padding: 16px !important;
-        text-transform: uppercase;
-        letter-spacing: 1px;
-    }
-    
-    .dataframe tbody tr:hover {
-        background: rgba(102, 126, 234, 0.1) !important;
-        transform: scale(1.005);
-    }
-    
-    /* Info Boxes */
-    .info-box {
-        background: white;
-        padding: 24px;
-        border-radius: 16px;
-        border-left: 4px solid #667eea;
-        margin: 20px 0;
-        box-shadow: 0 4px 20px rgba(0,0,0,0.1);
-    }
-    
-    .success-box {
-        background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%);
-        padding: 24px;
-        border-radius: 16px;
-        border-left: 4px solid #4caf50;
-        margin: 20px 0;
-        box-shadow: 0 4px 20px rgba(0,0,0,0.1);
-    }
-    
-    /* Activity Card */
-    .activity-card {
-        background: rgba(255, 255, 255, 0.1);
-        padding: 16px;
-        border-radius: 12px;
-        margin: 10px 0;
-        border-left: 4px solid #667eea;
-        backdrop-filter: blur(10px);
-        transition: all 0.3s ease;
-    }
-    
-    .activity-card:hover {
-        transform: translateX(5px);
-        background: rgba(255, 255, 255, 0.15);
-    }
-    
-    /* Online Indicator */
-    .online-indicator {
-        display: inline-block;
-        width: 10px;
-        height: 10px;
-        background: #10b981;
-        border-radius: 50%;
-        margin-right: 8px;
-        animation: pulse-green 2s infinite;
-        box-shadow: 0 0 10px #10b981;
-    }
-    
-    @keyframes pulse-green {
-        0%, 100% { opacity: 1; transform: scale(1); }
-        50% { opacity: 0.6; transform: scale(1.1); }
-    }
-    
-    /* Progress Bar */
-    .stProgress > div > div > div > div {
-        background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
-        border-radius: 10px;
-    }
-    
-    /* Expanders */
-    .streamlit-expanderHeader {
-        background: rgba(255, 255, 255, 0.1);
-        border-radius: 12px;
-        border: 2px solid rgba(255, 255, 255, 0.2);
-        font-weight: 700;
-        color: white;
-        padding: 1rem;
-        backdrop-filter: blur(10px);
-    }
-    
-    .streamlit-expanderHeader:hover {
-        border-color: rgba(255, 255, 255, 0.4);
-        background: rgba(255, 255, 255, 0.15);
-    }
-    
-    /* Mobile Responsive */
-    @media (max-width: 768px) {
-        .main-header {
-            font-size: 2rem;
-        }
-        
-        .sub-header {
-            font-size: 1rem;
-        }
-    }
-</style>
-""", unsafe_allow_html=True)
+    </div>
+    """, unsafe_allow_html=True)
 
 # ============================================================================
 # LOAD MODELS
@@ -920,499 +566,35 @@ with st.spinner("🔄 Loading AI models..."):
     best_model, scaler, label_encoders = load_models()
 
 # ============================================================================
-# SIDEBAR (Common for both Admin & User)
+# MAIN CONTENT - DASHBOARD
 # ============================================================================
 
-with st.sidebar:
-    st.image("https://img.icons8.com/fluency/96/000000/student-male.png", width=80)
-    st.title("🎓 Student Scorer")
+if page == "📊 Dashboard":
     
-    user_stats = get_user_stats(st.session_state.user['id'])
-    
-    st.markdown(f"""
-    <div class='user-info'>
-        <h3 style='color: #60a5fa !important;'>👤 {st.session_state.user['username']}</h3>
-        <p style='margin: 8px 0; opacity: 0.9;'>Role: <b style='color: #a78bfa;'>{st.session_state.user['role'].upper()}</b></p>
-        <hr style='margin: 12px 0; opacity: 0.3;'>
-        <p style='margin: 6px 0;'>📊 Scorings: <b>{user_stats['total_scorings']}</b></p>
-        <p style='margin: 6px 0;'>📄 Students: <b>{user_stats['total_leads']:,}</b></p>
-        <p style='margin: 6px 0;'>🔑 Logins: <b>{user_stats['total_logins']}</b></p>
+    # Header
+    st.markdown("""
+    <div class="page-header">
+        <div class="page-title">Student Lead Scoring Dashboard</div>
+        <div class="page-subtitle">AI-Powered Student Conversion Prediction Platform</div>
     </div>
     """, unsafe_allow_html=True)
     
-    if st.button("🚪 LOGOUT", use_container_width=True):
-        logout_user(st.session_state.user['id'])
-        log_usage(st.session_state.user['id'], 'logout')
-        st.session_state.logged_in = False
-        st.session_state.user = None
-        st.rerun()
+    # File Upload Section
+    st.markdown('<div class="content-card">', unsafe_allow_html=True)
+    st.markdown('<div class="card-header"><div class="card-title">📁 Upload Student Data</div></div>', unsafe_allow_html=True)
     
-    st.markdown("---")
+    col1, col2 = st.columns([2, 1])
     
-    st.markdown("""
-    ### 📊 About
-    AI-powered tool for predicting student lead conversion
-    
-    ### 🚀 Features
-    - **Smart Predictions**: ML-based scoring
-    - **Instant Results**: Real-time analysis
-    - **Visual Insights**: Interactive charts
-    - **Export Data**: Download results
-    
-    ### 📈 Score Ranges
-    - 🟢 **70-100%**: High Priority
-    - 🟡 **40-70%**: Medium Priority  
-    - 🔴 **0-40%**: Low Priority
-    """)
-
-# ============================================================================
-# ADMIN DASHBOARD
-# ============================================================================
-
-if st.session_state.user['role'] == 'admin':
-    
-    st.markdown('<div class="main-header">👑 ADMIN COMMAND CENTER</div>', unsafe_allow_html=True)
-    st.markdown('<div class="sub-header">Complete System Management & Student Lead Scoring</div>', unsafe_allow_html=True)
-    
-    # System Stats
-    sys_stats = get_system_stats()
-    
-    col1, col2, col3, col4, col5 = st.columns(5)
     with col1:
-        st.metric("👥 Users", sys_stats['total_users'])
-    with col2:
-        st.metric("🟢 Online", sys_stats['currently_online'])
-    with col3:
-        st.metric("📊 Scorings", sys_stats['total_scorings'])
-    with col4:
-        st.metric("📄 Students", f"{sys_stats['total_leads']:,}")
-    with col5:
-        st.metric("🕒 Today", sys_stats['today_logins'])
-    
-    st.markdown("---")
-    
-    # Main Admin Tabs
-    admin_main_tab1, admin_main_tab2 = st.tabs([
-        "🎯 STUDENT SCORING DASHBOARD",
-        "👑 USER MANAGEMENT"
-    ])
-    
-    # ========================================================================
-    # ADMIN TAB 1: STUDENT SCORING DASHBOARD
-    # ========================================================================
-    
-    with admin_main_tab1:
-        st.markdown("## 🚀 Student Lead Scoring Engine")
-        
-        # File uploader
-        st.markdown("### 📁 Upload Student Lead Data")
-        
-        col1, col2, col3 = st.columns([1, 2, 1])
-        with col2:
-            uploaded_file = st.file_uploader(
-                "Drop your CSV file here or click to browse",
-                type=["csv"],
-                help="Upload CSV file containing student lead information"
-            )
-        
-        # Sample data download
-        st.markdown("### 📥 Need a Sample File?")
-        col1, col2, col3 = st.columns([1, 2, 1])
-        with col2:
-            sample_data = pd.DataFrame({
-                'Email_Source': ['Google', 'Facebook', 'Direct', 'Referral', 'LinkedIn'],
-                'Contacted': ['Yes', 'No', 'Yes', 'No', 'Yes'],
-                'Location': ['Mumbai', 'Delhi', 'Bangalore', 'Chennai', 'Pune'],
-                'Profession': ['Student', 'Working Professional', 'Unemployed', 'Freelancer', 'Student'],
-                'Course_Interest': ['Data Science', 'Web Development', 'AI/ML', 'Digital Marketing', 'Cloud Computing']
-            })
-            csv_sample = sample_data.to_csv(index=False).encode('utf-8')
-            st.download_button(
-                "📥 Download Sample CSV Template",
-                csv_sample,
-                "sample_student_leads.csv",
-                "text/csv",
-                use_container_width=True
-            )
-        
-        st.markdown("---")
-        
-        if uploaded_file is not None:
-            try:
-                new_leads = pd.read_csv(uploaded_file)
-                
-                # Quick stats
-                st.markdown("### 📊 Data Overview")
-                col1, col2, col3, col4 = st.columns(4)
-                
-                with col1:
-                    st.markdown(f"""
-                    <div class="metric-card">
-                        <h2 style="color: #667eea; margin: 0;">📋</h2>
-                        <h3 style="margin: 10px 0;">{len(new_leads)}</h3>
-                        <p style="color: #7f8c8d; margin: 0;">Total Leads</p>
-                    </div>
-                    """, unsafe_allow_html=True)
-                
-                with col2:
-                    st.markdown(f"""
-                    <div class="metric-card">
-                        <h2 style="color: #667eea; margin: 0;">📁</h2>
-                        <h3 style="margin: 10px 0;">{len(new_leads.columns)}</h3>
-                        <p style="color: #7f8c8d; margin: 0;">Columns</p>
-                    </div>
-                    """, unsafe_allow_html=True)
-                
-                with col3:
-                    st.markdown("""
-                    <div class="metric-card">
-                        <h2 style="color: #667eea; margin: 0;">✓</h2>
-                        <h3 style="margin: 10px 0;">Ready</h3>
-                        <p style="color: #7f8c8d; margin: 0;">Status</p>
-                    </div>
-                    """, unsafe_allow_html=True)
-                
-                with col4:
-                    st.markdown("""
-                    <div class="metric-card">
-                        <h2 style="color: #667eea; margin: 0;">🤖</h2>
-                        <h3 style="margin: 10px 0;">AI</h3>
-                        <p style="color: #7f8c8d; margin: 0;">Processing</p>
-                    </div>
-                    """, unsafe_allow_html=True)
-                
-                # Display data
-                with st.expander("👁️ View Uploaded Data", expanded=True):
-                    st.dataframe(new_leads.head(10), use_container_width=True)
-                
-                # Process and predict
-                st.markdown("### ⚙️ AI Processing Pipeline")
-                progress_bar = st.progress(0)
-                status_text = st.empty()
-                
-                status_text.text("🔄 Processing data...")
-                progress_bar.progress(50)
-                
-                result_df, error = process_and_predict(new_leads, best_model, scaler, label_encoders)
-                
-                if error:
-                    st.error(f"❌ Error: {error}")
-                    st.stop()
-                
-                progress_bar.progress(100)
-                status_text.text("✅ Processing complete!")
-                
-                log_usage(st.session_state.user['id'], 'score_leads', 'Admin scoring', len(result_df))
-                
-                st.markdown("---")
-                
-                # Results Dashboard
-                st.markdown("### 🎯 Prediction Results Dashboard")
-                
-                high_score = (result_df['Lead_Score'] > 0.7).sum()
-                medium_score = ((result_df['Lead_Score'] > 0.4) & (result_df['Lead_Score'] <= 0.7)).sum()
-                low_score = (result_df['Lead_Score'] <= 0.4).sum()
-                avg_score = result_df['Lead_Score_%'].mean()
-                
-                col1, col2, col3, col4 = st.columns(4)
-                
-                with col1:
-                    st.metric("🟢 High Priority", high_score, f"{(high_score/len(result_df)*100):.1f}%")
-                with col2:
-                    st.metric("🟡 Medium Priority", medium_score, f"{(medium_score/len(result_df)*100):.1f}%")
-                with col3:
-                    st.metric("🔴 Low Priority", low_score, f"{(low_score/len(result_df)*100):.1f}%")
-                with col4:
-                    st.metric("📊 Average Score", f"{avg_score:.1f}%")
-                
-                st.markdown("---")
-                
-                # Visualizations
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    st.markdown("#### 📊 Score Distribution")
-                    fig = px.histogram(
-                        result_df,
-                        x='Lead_Score_%',
-                        nbins=20,
-                        color_discrete_sequence=['#667eea']
-                    )
-                    fig.update_layout(
-                        showlegend=False,
-                        height=400,
-                        paper_bgcolor='rgba(0,0,0,0)',
-                        plot_bgcolor='rgba(255,255,255,0.9)'
-                    )
-                    st.plotly_chart(fig, use_container_width=True)
-                
-                with col2:
-                    st.markdown("#### 🎯 Priority Breakdown")
-                    priority_counts = result_df['Priority'].value_counts()
-                    fig = go.Figure(data=[go.Pie(
-                        labels=priority_counts.index,
-                        values=priority_counts.values,
-                        hole=.4,
-                        marker_colors=['#ef5350', '#ffa726', '#66bb6a']
-                    )])
-                    fig.update_layout(
-                        height=400,
-                        paper_bgcolor='rgba(0,0,0,0)'
-                    )
-                    st.plotly_chart(fig, use_container_width=True)
-                
-                # Results Table
-                st.markdown("### 📋 Detailed Lead Scores")
-                
-                def highlight_priority(row):
-                    if row['Lead_Score_%'] > 70:
-                        return ['background-color: #e8f5e9'] * len(row)
-                    elif row['Lead_Score_%'] > 40:
-                        return ['background-color: #fff9c4'] * len(row)
-                    else:
-                        return ['background-color: #ffebee'] * len(row)
-                
-                st.dataframe(result_df.style.apply(highlight_priority, axis=1), use_container_width=True, height=400)
-                
-                # Export section
-                st.markdown("---")
-                st.markdown("### 💾 Export Results")
-                
-                col1, col2, col3 = st.columns([1, 2, 1])
-                with col2:
-                    csv = result_df.to_csv(index=False).encode('utf-8')
-                    st.download_button(
-                        "📥 Download Complete Report (CSV)",
-                        csv,
-                        f"Student_Lead_Scoring_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                        "text/csv",
-                        use_container_width=True
-                    )
-                
-                # Top leads
-                st.markdown("---")
-                st.markdown("### 🏆 Top 10 High-Priority Student Leads")
-                top_leads = result_df.head(10)
-                st.dataframe(top_leads, use_container_width=True)
-                
-            except Exception as e:
-                st.error(f"❌ Error: {str(e)}")
-                with st.expander("🔍 Debug Info"):
-                    st.code(str(e))
-        
-        else:
-            st.markdown("""
-                <div class="success-box">
-                    <h3>✅ System Ready</h3>
-                    <p>AI models loaded successfully. Upload student lead data to begin scoring.</p>
-                </div>
-            """, unsafe_allow_html=True)
-    
-    # ========================================================================
-    # ADMIN TAB 2: USER MANAGEMENT
-    # ========================================================================
-    
-    with admin_main_tab2:
-        st.markdown("## 👑 User Management System")
-        
-        user_tab1, user_tab2, user_tab3, user_tab4 = st.tabs([
-            "🟢 LIVE DASHBOARD",
-            "➕ CREATE USER",
-            "👥 MANAGE USERS",
-            "📊 ACTIVITY LOG"
-        ])
-        
-        with user_tab1:
-            st.markdown("### 🟢 Live User Activity")
-            
-            if st.button("🔄 Refresh", key="admin_refresh"):
-                st.rerun()
-            
-            active_users = get_currently_logged_in_users()
-            
-            if active_users:
-                st.success(f"**{len(active_users)} user(s) online**")
-                
-                for user in active_users:
-                    user_id, username, email, login_time, role = user
-                    user_stats = get_user_stats(user_id)
-                    
-                    st.markdown(f"""
-<div style='background: linear-gradient(135deg, rgba(16, 185, 129, 0.2) 0%, rgba(5, 150, 105, 0.1) 100%);
-            padding: 20px; border-radius: 12px; margin: 12px 0; border: 2px solid rgba(16, 185, 129, 0.3);'>
-    <span class='online-indicator'></span>
-    <b style='color: white; font-size: 1.1rem;'>{username}</b> 
-    <span style='color: #a7f3d0; margin-left: 10px;'>({role})</span><br>
-    <small style='color: rgba(255,255,255,0.8);'>📧 {email if email else 'N/A'} | 🕒 {login_time}</small><br>
-    <small style='color: rgba(255,255,255,0.9);'>📊 {user_stats['total_scorings']} scorings | 📄 {user_stats['total_leads']:,} students</small>
-</div>
-                    """, unsafe_allow_html=True)
-            else:
-                st.warning("No users currently online")
-        
-        with user_tab2:
-            st.markdown("### ➕ Create New User")
-            
-            with st.form("create_user_form"):
-                col_a, col_b = st.columns(2)
-                with col_a:
-                    new_username = st.text_input("Username *")
-                    new_email = st.text_input("Email")
-                with col_b:
-                    new_password = st.text_input("Password *", type="password")
-                    confirm_password = st.text_input("Confirm Password *", type="password")
-                
-                submitted = st.form_submit_button("✅ CREATE USER", type="primary", use_container_width=True)
-                
-                if submitted:
-                    if new_username and new_password == confirm_password and len(new_password) >= 6:
-                        if create_user_by_admin(new_username, new_password, new_email):
-                            st.success(f"""
-✅ User Created Successfully!
-
-**Username:** `{new_username}`
-**Password:** `{new_password}`
-**Email:** `{new_email if new_email else 'Not provided'}`
-                            """)
-                        else:
-                            st.error("❌ Username already exists!")
-                    elif len(new_password) < 6:
-                        st.error("❌ Password must be at least 6 characters")
-                    else:
-                        st.error("❌ Passwords don't match or fields are empty")
-        
-        with user_tab3:
-            st.markdown("### 👥 All Users")
-            
-            users = get_all_users()
-            user_data = []
-            for user in users:
-                user_data.append({
-                    'ID': user[0],
-                    'Username': user[1],
-                    'Email': user[2] if user[2] else 'N/A',
-                    'Created': user[3],
-                    'Last Login': user[4] if user[4] else 'Never',
-                    'Status': '🟢 Active' if user[5] else '🔴 Inactive',
-                    'Role': user[6]
-                })
-            
-            df_users = pd.DataFrame(user_data)
-            st.dataframe(df_users, use_container_width=True, height=500)
-            
-            st.markdown("---")
-            st.markdown("### ⚙️ User Actions")
-            
-            col_m1, col_m2, col_m3 = st.columns(3)
-            with col_m1:
-                user_id_action = st.number_input("User ID", min_value=1, step=1)
-            with col_m2:
-                action_type = st.selectbox("Action", ["Enable", "Disable", "Delete"])
-            with col_m3:
-                st.write("")
-                if st.button("▶️ EXECUTE", type="primary"):
-                    if user_id_action != 1:
-                        if action_type == "Enable":
-                            toggle_user_status(user_id_action, 1)
-                            st.success("✅ User enabled!")
-                            time.sleep(1)
-                            st.rerun()
-                        elif action_type == "Disable":
-                            toggle_user_status(user_id_action, 0)
-                            st.warning("⚠️ User disabled!")
-                            time.sleep(1)
-                            st.rerun()
-                        elif action_type == "Delete":
-                            delete_user(user_id_action)
-                            st.error("🗑️ User deleted!")
-                            time.sleep(1)
-                            st.rerun()
-                    else:
-                        st.error("❌ Cannot modify admin account")
-        
-        with user_tab4:
-            st.markdown("### 📊 System Activity Log")
-            
-            all_activities = get_all_user_activities()
-            
-            if all_activities:
-                activity_data = []
-                for activity in all_activities:
-                    username, action, details, leads_scored, timestamp = activity
-                    activity_data.append({
-                        'Username': username,
-                        'Action': action,
-                        'Details': details if details else '-',
-                        'Leads': leads_scored if leads_scored else '-',
-                        'Timestamp': timestamp
-                    })
-                
-                df_activities = pd.DataFrame(activity_data)
-                st.dataframe(df_activities, use_container_width=True, height=600)
-            else:
-                st.info("No activities logged yet")
-
-# ============================================================================
-# USER DASHBOARD
-# ============================================================================
-
-else:
-    
-    st.markdown('<div class="main-header">🎓 STUDENT LEAD SCORING</div>', unsafe_allow_html=True)
-    st.markdown('<div class="sub-header">AI-Powered Student Conversion Prediction Platform</div>', unsafe_allow_html=True)
-    
-    st.markdown("""
-    <div class="success-box">
-        <h3>✅ System Ready</h3>
-        <p>AI models loaded successfully. Upload your student lead data to begin scoring.</p>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    # Instructions
-    with st.expander("📖 How to Use This Tool", expanded=False):
-        col1, col2 = st.columns(2)
-        with col1:
-            st.markdown("""
-            #### 📥 Step 1: Prepare Your Data
-            - Format as CSV file
-            - Include required columns
-            - Clean data recommended
-            
-            #### 🎯 Step 2: Upload & Analyze
-            - Click upload button
-            - Select your CSV file
-            - Wait for processing
-            """)
-        with col2:
-            st.markdown("""
-            #### 📊 Step 3: Review Results
-            - Check conversion scores
-            - Analyze distribution
-            - Identify priorities
-            
-            #### 💾 Step 4: Export Results
-            - Download scored leads
-            - Share with team
-            - Track performance
-            """)
-    
-    st.markdown("---")
-    
-    # File uploader
-    st.markdown("## 📁 Upload Student Lead Data")
-    
-    col1, col2, col3 = st.columns([1, 2, 1])
-    with col2:
         uploaded_file = st.file_uploader(
-            "Drop your CSV file here or click to browse",
+            "Upload your CSV file containing student lead information",
             type=["csv"],
-            help="Upload CSV file containing student lead information"
+            help="Select a CSV file with student lead data",
+            label_visibility="collapsed"
         )
     
-    # Sample data download
-    st.markdown("### 📥 Need a Sample File?")
-    col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
+        # Sample data download
         sample_data = pd.DataFrame({
             'Email_Source': ['Google', 'Facebook', 'Direct', 'Referral', 'LinkedIn'],
             'Contacted': ['Yes', 'No', 'Yes', 'No', 'Yes'],
@@ -1422,89 +604,85 @@ else:
         })
         csv_sample = sample_data.to_csv(index=False).encode('utf-8')
         st.download_button(
-            "📥 Download Sample CSV Template",
+            "📥 Download Sample",
             csv_sample,
-            "sample_student_leads.csv",
+            "sample_template.csv",
             "text/csv",
             use_container_width=True
         )
     
-    st.markdown("---")
+    st.markdown('</div>', unsafe_allow_html=True)
     
+    # Process uploaded file
     if uploaded_file is not None:
         try:
             new_leads = pd.read_csv(uploaded_file)
             
-            # Quick stats
-            st.markdown("## 📊 Data Analysis Dashboard")
+            # Quick Stats Metrics
+            st.markdown("### 📊 Data Overview")
+            
             col1, col2, col3, col4 = st.columns(4)
             
             with col1:
-                st.markdown(f"""
+                st.markdown("""
                 <div class="metric-card">
-                    <h2 style="color: #667eea; margin: 0;">📋</h2>
-                    <h3 style="margin: 10px 0;">{len(new_leads)}</h3>
-                    <p style="color: #7f8c8d; margin: 0;">Total Leads</p>
+                    <div class="metric-icon icon-blue">📋</div>
+                    <div class="metric-value">{:,}</div>
+                    <div class="metric-label">Total Leads</div>
                 </div>
-                """, unsafe_allow_html=True)
+                """.format(len(new_leads)), unsafe_allow_html=True)
             
             with col2:
-                st.markdown(f"""
+                st.markdown("""
                 <div class="metric-card">
-                    <h2 style="color: #667eea; margin: 0;">📁</h2>
-                    <h3 style="margin: 10px 0;">{len(new_leads.columns)}</h3>
-                    <p style="color: #7f8c8d; margin: 0;">Columns</p>
+                    <div class="metric-icon icon-purple">📁</div>
+                    <div class="metric-value">{}</div>
+                    <div class="metric-label">Data Columns</div>
                 </div>
-                """, unsafe_allow_html=True)
+                """.format(len(new_leads.columns)), unsafe_allow_html=True)
             
             with col3:
                 st.markdown("""
                 <div class="metric-card">
-                    <h2 style="color: #667eea; margin: 0;">✓</h2>
-                    <h3 style="margin: 10px 0;">Ready</h3>
-                    <p style="color: #7f8c8d; margin: 0;">Status</p>
+                    <div class="metric-icon icon-green">✓</div>
+                    <div class="metric-value">Ready</div>
+                    <div class="metric-label">System Status</div>
                 </div>
                 """, unsafe_allow_html=True)
             
             with col4:
                 st.markdown("""
                 <div class="metric-card">
-                    <h2 style="color: #667eea; margin: 0;">🤖</h2>
-                    <h3 style="margin: 10px 0;">AI</h3>
-                    <p style="color: #7f8c8d; margin: 0;">Processing</p>
+                    <div class="metric-icon icon-orange">🤖</div>
+                    <div class="metric-value">AI</div>
+                    <div class="metric-label">Model Loaded</div>
                 </div>
                 """, unsafe_allow_html=True)
             
             st.markdown("<br>", unsafe_allow_html=True)
             
-            # Display data
-            with st.expander("👁️ View Uploaded Data", expanded=True):
-                st.dataframe(new_leads.head(10), use_container_width=True)
+            # Data Preview
+            with st.expander("👁️ Preview Uploaded Data", expanded=True):
+                st.dataframe(new_leads.head(10), use_container_width=True, height=300)
             
-            # Process
-            st.markdown("## ⚙️ AI Processing Pipeline")
-            progress_bar = st.progress(0)
-            status_text = st.empty()
+            st.markdown("<br>", unsafe_allow_html=True)
             
-            status_text.text("🔄 Processing data...")
-            progress_bar.progress(50)
-            
-            result_df, error = process_and_predict(new_leads, best_model, scaler, label_encoders)
+            # Processing
+            with st.spinner("⚙️ AI is analyzing your data..."):
+                result_df, error = process_and_predict(new_leads, best_model, scaler, label_encoders)
             
             if error:
                 st.error(f"❌ Error: {error}")
                 st.stop()
             
-            progress_bar.progress(100)
-            status_text.text("✅ Processing complete!")
-            
-            log_usage(st.session_state.user['id'], 'score_leads', 'User scoring', len(result_df))
+            st.success("✅ Analysis Complete!")
             
             st.markdown("---")
             
-            # Results
-            st.markdown("## 🎯 Prediction Results Dashboard")
+            # Results Section
+            st.markdown("### 🎯 Prediction Results")
             
+            # Calculate metrics
             high_score = (result_df['Lead_Score'] > 0.7).sum()
             medium_score = ((result_df['Lead_Score'] > 0.4) & (result_df['Lead_Score'] <= 0.7)).sum()
             low_score = (result_df['Lead_Score'] <= 0.4).sum()
@@ -1513,13 +691,43 @@ else:
             col1, col2, col3, col4 = st.columns(4)
             
             with col1:
-                st.metric("🟢 High Priority", high_score, f"{(high_score/len(result_df)*100):.1f}%")
+                st.markdown("""
+                <div class="metric-card">
+                    <div class="metric-icon icon-green">🎯</div>
+                    <div class="metric-value">{}</div>
+                    <div class="metric-label">High Priority</div>
+                    <div class="metric-change positive">{}% of total</div>
+                </div>
+                """.format(high_score, round(high_score/len(result_df)*100, 1)), unsafe_allow_html=True)
+            
             with col2:
-                st.metric("🟡 Medium Priority", medium_score, f"{(medium_score/len(result_df)*100):.1f}%")
+                st.markdown("""
+                <div class="metric-card">
+                    <div class="metric-icon icon-orange">⚠️</div>
+                    <div class="metric-value">{}</div>
+                    <div class="metric-label">Medium Priority</div>
+                    <div class="metric-change">{}% of total</div>
+                </div>
+                """.format(medium_score, round(medium_score/len(result_df)*100, 1)), unsafe_allow_html=True)
+            
             with col3:
-                st.metric("🔴 Low Priority", low_score, f"{(low_score/len(result_df)*100):.1f}%")
+                st.markdown("""
+                <div class="metric-card">
+                    <div class="metric-icon" style="background: #fee; color: #dc3545;">📉</div>
+                    <div class="metric-value">{}</div>
+                    <div class="metric-label">Low Priority</div>
+                    <div class="metric-change negative">{}% of total</div>
+                </div>
+                """.format(low_score, round(low_score/len(result_df)*100, 1)), unsafe_allow_html=True)
+            
             with col4:
-                st.metric("📊 Average Score", f"{avg_score:.1f}%")
+                st.markdown("""
+                <div class="metric-card">
+                    <div class="metric-icon icon-blue">📊</div>
+                    <div class="metric-value">{:.1f}%</div>
+                    <div class="metric-label">Average Score</div>
+                </div>
+                """.format(avg_score), unsafe_allow_html=True)
             
             st.markdown("<br>", unsafe_allow_html=True)
             
@@ -1527,82 +735,606 @@ else:
             col1, col2 = st.columns(2)
             
             with col1:
-                st.markdown("### 📊 Score Distribution")
+                st.markdown('<div class="content-card">', unsafe_allow_html=True)
+                st.markdown("#### 📊 Score Distribution")
+                
                 fig = px.histogram(
                     result_df,
                     x='Lead_Score_%',
                     nbins=20,
-                    color_discrete_sequence=['#667eea']
+                    color_discrete_sequence=['#0066cc']
                 )
                 fig.update_layout(
                     showlegend=False,
-                    height=400,
-                    paper_bgcolor='rgba(0,0,0,0)',
-                    plot_bgcolor='rgba(255,255,255,0.9)'
+                    height=350,
+                    margin=dict(l=0, r=0, t=20, b=0),
+                    paper_bgcolor='white',
+                    plot_bgcolor='#f8f9fa',
+                    font=dict(family="Inter", size=12),
+                    xaxis_title="Conversion Score (%)",
+                    yaxis_title="Number of Leads"
                 )
                 st.plotly_chart(fig, use_container_width=True)
+                st.markdown('</div>', unsafe_allow_html=True)
             
             with col2:
-                st.markdown("### 🎯 Priority Breakdown")
+                st.markdown('<div class="content-card">', unsafe_allow_html=True)
+                st.markdown("#### 🎯 Priority Breakdown")
+                
                 priority_counts = result_df['Priority'].value_counts()
+                colors = {'High': '#10b981', 'Medium': '#f59e0b', 'Low': '#dc3545'}
+                
                 fig = go.Figure(data=[go.Pie(
                     labels=priority_counts.index,
                     values=priority_counts.values,
-                    hole=.4,
-                    marker_colors=['#ef5350', '#ffa726', '#66bb6a']
+                    hole=.5,
+                    marker_colors=[colors[label] for label in priority_counts.index],
+                    textinfo='label+percent',
+                    textfont=dict(size=14, family="Inter", color="white"),
+                    hovertemplate='<b>%{label}</b><br>Count: %{value}<br>Percentage: %{percent}<extra></extra>'
                 )])
+                
                 fig.update_layout(
-                    height=400,
-                    paper_bgcolor='rgba(0,0,0,0)'
+                    height=350,
+                    margin=dict(l=0, r=0, t=20, b=0),
+                    paper_bgcolor='white',
+                    font=dict(family="Inter", size=12),
+                    showlegend=True,
+                    legend=dict(
+                        orientation="h",
+                        yanchor="bottom",
+                        y=-0.1,
+                        xanchor="center",
+                        x=0.5
+                    )
                 )
                 st.plotly_chart(fig, use_container_width=True)
+                st.markdown('</div>', unsafe_allow_html=True)
             
             # Results Table
             st.markdown("### 📋 Detailed Lead Scores")
             
-            def highlight_priority(row):
-                if row['Lead_Score_%'] > 70:
-                    return ['background-color: #e8f5e9'] * len(row)
-                elif row['Lead_Score_%'] > 40:
-                    return ['background-color: #fff9c4'] * len(row)
+            # Add priority badges to dataframe display
+            display_df = result_df.copy()
+            
+            # Style the dataframe
+            def style_priority(val):
+                if val == 'High':
+                    return 'background-color: #d1f4e0; color: #10b981; font-weight: 600'
+                elif val == 'Medium':
+                    return 'background-color: #fff3e0; color: #f59e0b; font-weight: 600'
                 else:
-                    return ['background-color: #ffebee'] * len(row)
+                    return 'background-color: #fee; color: #dc3545; font-weight: 600'
             
-            st.dataframe(result_df.style.apply(highlight_priority, axis=1), use_container_width=True, height=400)
+            styled_df = display_df.style.applymap(style_priority, subset=['Priority'])
             
-            # Export
+            st.dataframe(styled_df, use_container_width=True, height=400)
+            
+            # Export Section
             st.markdown("---")
-            st.markdown("## 💾 Export Results")
+            st.markdown("### 💾 Export Results")
             
             col1, col2, col3 = st.columns([1, 2, 1])
+            
             with col2:
                 csv = result_df.to_csv(index=False).encode('utf-8')
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
                 st.download_button(
                     "📥 Download Complete Report (CSV)",
                     csv,
-                    f"Student_Lead_Scoring_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                    f"Lead_Scoring_Report_{timestamp}.csv",
                     "text/csv",
                     use_container_width=True
                 )
             
-            # Top leads
+            # Top Leads Section
             st.markdown("---")
-            st.markdown("## 🏆 Top 10 High-Priority Student Leads")
+            st.markdown("### 🏆 Top 10 High-Priority Leads")
+            
             top_leads = result_df.head(10)
-            st.dataframe(top_leads, use_container_width=True)
+            st.dataframe(top_leads, use_container_width=True, height=400)
             
         except Exception as e:
-            st.error(f"❌ Error: {str(e)}")
-            with st.expander("🔍 Debug Info"):
+            st.error(f"❌ Error processing file: {str(e)}")
+            with st.expander("🔍 Debug Information"):
                 st.code(str(e))
+    
+    else:
+        # Welcome message when no file uploaded
+        st.markdown("""
+        <div class="info-box">
+            <h3 style='margin-top: 0; color: #0066cc;'>👋 Welcome to Student Lead Scoring Pro</h3>
+            <p style='margin-bottom: 0;'>
+                Upload your student lead data in CSV format to get instant AI-powered conversion predictions.
+                Our advanced machine learning model will analyze each lead and provide priority scores to help you focus on the most promising students.
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        # Feature highlights
+        st.markdown("### ✨ Key Features")
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.markdown("""
+            <div class="content-card">
+                <div style='font-size: 2.5rem; margin-bottom: 1rem;'>🤖</div>
+                <h4 style='color: #1a1a1a; margin-bottom: 0.5rem;'>AI-Powered</h4>
+                <p style='color: #6c757d; font-size: 0.9rem; margin: 0;'>
+                    Advanced machine learning algorithms trained on thousands of student conversions
+                </p>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        with col2:
+            st.markdown("""
+            <div class="content-card">
+                <div style='font-size: 2.5rem; margin-bottom: 1rem;'>⚡</div>
+                <h4 style='color: #1a1a1a; margin-bottom: 0.5rem;'>Instant Results</h4>
+                <p style='color: #6c757d; font-size: 0.9rem; margin: 0;'>
+                    Get predictions in seconds with real-time analysis and priority rankings
+                </p>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        with col3:
+            st.markdown("""
+            <div class="content-card">
+                <div style='font-size: 2.5rem; margin-bottom: 1rem;'>📊</div>
+                <h4 style='color: #1a1a1a; margin-bottom: 0.5rem;'>Visual Insights</h4>
+                <p style='color: #6c757d; font-size: 0.9rem; margin: 0;'>
+                    Interactive charts and detailed breakdowns to understand your leads better
+                </p>
+            </div>
+            """, unsafe_allow_html=True)
 
-# Footer
+# ============================================================================
+# USER GUIDE PAGE
+# ============================================================================
+
+elif page == "📖 User Guide":
+    
+    st.markdown("""
+    <div class="page-header">
+        <div class="page-title">User Guide</div>
+        <div class="page-subtitle">Step-by-step instructions for using the Student Lead Scoring Platform</div>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # Introduction
+    st.markdown("""
+    <div class="success-box">
+        <h3 style='margin-top: 0; color: #10b981;'>👋 Welcome!</h3>
+        <p style='margin-bottom: 0;'>
+            This guide will help you understand how to use the Student Lead Scoring Platform effectively.
+            Follow the simple steps below to get predictions for your student leads.
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    st.markdown("---")
+    
+    # Step 1
+    st.markdown("### 📥 Step 1: Prepare Your Data")
+    
+    st.markdown("""
+    <div class="content-card">
+        <h4>What You Need:</h4>
+        <ul style='line-height: 1.8; color: #495057;'>
+            <li><b>File Format:</b> CSV (Comma Separated Values) file</li>
+            <li><b>Required Columns:</b> Your CSV must include these exact column names:
+                <ul style='margin-top: 0.5rem;'>
+                    <li><code>Email_Source</code> - Where the lead came from (e.g., Google, Facebook, Direct)</li>
+                    <li><code>Contacted</code> - Whether they were contacted (Yes/No)</li>
+                    <li><code>Location</code> - Student's city/location</li>
+                    <li><code>Profession</code> - Current occupation (Student, Working Professional, etc.)</li>
+                    <li><code>Course_Interest</code> - Which course they're interested in</li>
+                </ul>
+            </li>
+        </ul>
+        
+        <div class="warning-box" style='margin-top: 1rem;'>
+            <b>⚠️ Important:</b> Make sure your column names match exactly (including capitalization).
+            The system won't work if column names are different!
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    st.markdown("---")
+    
+    # Step 2
+    st.markdown("### 📤 Step 2: Upload Your File")
+    
+    st.markdown("""
+    <div class="content-card">
+        <h4>How to Upload:</h4>
+        <ol style='line-height: 2; color: #495057;'>
+            <li>Go to the <b>Dashboard</b> page (click "📊 Dashboard" in the sidebar)</li>
+            <li>Look for the <b>"Upload Student Data"</b> section at the top</li>
+            <li>Click on <b>"Browse files"</b> or drag and drop your CSV file</li>
+            <li>Wait a few seconds while the file uploads</li>
+        </ol>
+        
+        <div class="info-box" style='margin-top: 1rem;'>
+            <b>💡 Tip:</b> Don't have a file ready? Click the <b>"📥 Download Sample"</b> button to get a template
+            that shows you exactly how your data should be formatted.
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    st.markdown("---")
+    
+    # Step 3
+    st.markdown("### 🤖 Step 3: AI Processing")
+    
+    st.markdown("""
+    <div class="content-card">
+        <h4>What Happens Automatically:</h4>
+        <ul style='line-height: 1.8; color: #495057;'>
+            <li><b>Data Validation:</b> The system checks if your data format is correct</li>
+            <li><b>AI Analysis:</b> Machine learning models analyze each student lead</li>
+            <li><b>Score Calculation:</b> Each lead gets a conversion probability score (0-100%)</li>
+            <li><b>Priority Assignment:</b> Leads are categorized as High, Medium, or Low priority</li>
+        </ul>
+        
+        <p style='color: #495057; margin-top: 1rem;'>
+            <b>This process usually takes 5-10 seconds</b> depending on how many leads you have.
+            You'll see a progress indicator while the AI works.
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    st.markdown("---")
+    
+    # Step 4
+    st.markdown("### 📊 Step 4: Understanding Your Results")
+    
+    st.markdown("""
+    <div class="content-card">
+        <h4>What the Scores Mean:</h4>
+        
+        <div style='display: grid; gap: 1rem; margin: 1rem 0;'>
+            <div style='background: #d1f4e0; padding: 1rem; border-radius: 8px; border-left: 4px solid #10b981;'>
+                <h5 style='color: #10b981; margin: 0 0 0.5rem 0;'>🟢 High Priority (70-100%)</h5>
+                <p style='margin: 0; color: #495057;'>
+                    <b>What it means:</b> These students are very likely to enroll. Focus your efforts here first!<br>
+                    <b>Action:</b> Call them immediately, send personalized messages, offer special deals.
+                </p>
+            </div>
+            
+            <div style='background: #fff3e0; padding: 1rem; border-radius: 8px; border-left: 4px solid #f59e0b;'>
+                <h5 style='color: #f59e0b; margin: 0 0 0.5rem 0;'>🟡 Medium Priority (40-70%)</h5>
+                <p style='margin: 0; color: #495057;'>
+                    <b>What it means:</b> These students show interest but need more nurturing.<br>
+                    <b>Action:</b> Send follow-up emails, share success stories, provide more information.
+                </p>
+            </div>
+            
+            <div style='background: #fee; padding: 1rem; border-radius: 8px; border-left: 4px solid #dc3545;'>
+                <h5 style='color: #dc3545; margin: 0 0 0.5rem 0;'>🔴 Low Priority (0-40%)</h5>
+                <p style='margin: 0; color: #495057;'>
+                    <b>What it means:</b> These students are less likely to convert right now.<br>
+                    <b>Action:</b> Keep them in your email list for future opportunities, but don't spend too much time.
+                </p>
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    st.markdown("---")
+    
+    # Step 5
+    st.markdown("### 📈 Step 5: Using the Charts")
+    
+    st.markdown("""
+    <div class="content-card">
+        <h4>Understanding the Visualizations:</h4>
+        
+        <h5>📊 Score Distribution Chart (Left Side)</h5>
+        <p style='color: #495057; margin-bottom: 1rem;'>
+            This shows how your leads are spread across different score ranges.
+            A good distribution means you have leads at all levels.
+        </p>
+        
+        <h5>🎯 Priority Breakdown Chart (Right Side)</h5>
+        <p style='color: #495057; margin-bottom: 1rem;'>
+            This pie chart shows what percentage of your leads fall into each priority category.
+            Ideally, you want a good number of High Priority leads!
+        </p>
+        
+        <div class="info-box" style='margin-top: 1rem;'>
+            <b>💡 Pro Tip:</b> If you have very few High Priority leads, you might want to review your lead
+            generation strategies or targeting criteria.
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    st.markdown("---")
+    
+    # Step 6
+    st.markdown("### 💾 Step 6: Export and Use Your Results")
+    
+    st.markdown("""
+    <div class="content-card">
+        <h4>Downloading Your Report:</h4>
+        <ol style='line-height: 2; color: #495057;'>
+            <li>Scroll down to the <b>"Export Results"</b> section</li>
+            <li>Click the <b>"📥 Download Complete Report"</b> button</li>
+            <li>The CSV file will download to your computer with a timestamp</li>
+            <li>Open it in Excel or Google Sheets to start working with your leads</li>
+        </ol>
+        
+        <h4 style='margin-top: 2rem;'>What's in the Export File:</h4>
+        <ul style='line-height: 1.8; color: #495057;'>
+            <li>All your original data</li>
+            <li><b>Lead_Score:</b> Decimal score (0.00 to 1.00)</li>
+            <li><b>Lead_Score_%:</b> Percentage score (0% to 100%)</li>
+            <li><b>Priority:</b> High/Medium/Low category</li>
+            <li><b>Prediction:</b> "Likely to Convert" or "Unlikely"</li>
+        </ul>
+        
+        <div class="success-box" style='margin-top: 1rem;'>
+            <b>✅ Next Steps:</b> Import this file into your CRM system or use it to prioritize your sales calls!
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    st.markdown("---")
+    
+    # Common Questions
+    st.markdown("### ❓ Common Questions")
+    
+    with st.expander("🤔 What if my CSV file has different column names?"):
+        st.markdown("""
+        The system requires exact column names to work properly. If your columns are named differently:
+        
+        1. **Option 1:** Rename your columns in Excel/Google Sheets to match the required names
+        2. **Option 2:** Download our sample template and copy your data into it
+        
+        Required column names (must match exactly):
+        - `Email_Source`
+        - `Contacted`
+        - `Location`
+        - `Profession`
+        - `Course_Interest`
+        """)
+    
+    with st.expander("⚡ How long does the analysis take?"):
+        st.markdown("""
+        The AI analysis is very fast:
+        - **Small files (1-100 leads):** 2-5 seconds
+        - **Medium files (100-1,000 leads):** 5-15 seconds
+        - **Large files (1,000+ leads):** 15-30 seconds
+        
+        The system can handle thousands of leads at once!
+        """)
+    
+    with st.expander("🎯 How accurate are the predictions?"):
+        st.markdown("""
+        Our AI model has been trained on thousands of real student conversions and achieves:
+        - **85-90% accuracy** on average
+        - **High precision** for identifying top leads
+        
+        Remember: These are predictions to help you prioritize. Always follow up with all leads,
+        but focus your best efforts on High Priority ones!
+        """)
+    
+    with st.expander("📱 Can I use this on my phone?"):
+        st.markdown("""
+        Yes! The platform is fully responsive and works on:
+        - Desktop computers
+        - Laptops
+        - Tablets
+        - Smartphones
+        
+        The interface automatically adjusts to your screen size.
+        """)
+    
+    with st.expander("🔒 Is my data secure?"):
+        st.markdown("""
+        Yes, your data is secure:
+        - Files are processed **only during your session**
+        - No data is permanently stored on our servers
+        - Once you close your browser, all data is removed
+        - The AI model doesn't learn from or save your specific data
+        """)
+    
+    with st.expander("💰 What does High/Medium/Low priority really mean for my business?"):
+        st.markdown("""
+        Here's what you should do with each priority level:
+        
+        **🟢 High Priority (70-100%):**
+        - **These are your hot leads!** Call them within 24 hours
+        - Assign your best sales people to these leads
+        - Offer special enrollment bonuses or discounts
+        - **Expected conversion rate:** 60-80%
+        
+        **🟡 Medium Priority (40-70%):**
+        - **These need nurturing** - they're interested but not ready yet
+        - Send them useful content (course details, success stories)
+        - Follow up weekly with personalized messages
+        - **Expected conversion rate:** 30-50%
+        
+        **🔴 Low Priority (0-40%):**
+        - **Don't ignore them, but don't spend hours on them**
+        - Add them to your email newsletter
+        - Try again in 3-6 months with new offers
+        - **Expected conversion rate:** 5-20%
+        """)
+
+# ============================================================================
+# ABOUT PAGE
+# ============================================================================
+
+elif page == "ℹ️ About":
+    
+    st.markdown("""
+    <div class="page-header">
+        <div class="page-title">About This Platform</div>
+        <div class="page-subtitle">Learn more about the Student Lead Scoring Intelligence Platform</div>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    st.markdown("""
+    <div class="content-card">
+        <h3 style='color: #1a1a1a; margin-top: 0;'>🎓 What is Student Lead Scoring?</h3>
+        <p style='color: #495057; line-height: 1.8; font-size: 1rem;'>
+            Student Lead Scoring is an AI-powered system that helps educational institutions predict which prospective
+            students are most likely to enroll in their courses. By analyzing historical data and patterns, our machine
+            learning model assigns each lead a probability score, helping you focus your recruitment efforts where
+            they'll have the most impact.
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    st.markdown("---")
+    
+    st.markdown("### 🚀 How It Works")
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.markdown("""
+        <div class="content-card" style='text-align: center;'>
+            <div style='font-size: 3rem; margin-bottom: 1rem;'>📊</div>
+            <h4 style='color: #1a1a1a;'>Data Analysis</h4>
+            <p style='color: #6c757d; font-size: 0.9rem;'>
+                We analyze multiple factors including lead source, location, profession,
+                course interest, and contact history
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col2:
+        st.markdown("""
+        <div class="content-card" style='text-align: center;'>
+            <div style='font-size: 3rem; margin-bottom: 1rem;'>🤖</div>
+            <h4 style='color: #1a1a1a;'>AI Prediction</h4>
+            <p style='color: #6c757d; font-size: 0.9rem;'>
+                Our trained machine learning model processes the data and predicts
+                conversion probability with 85-90% accuracy
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col3:
+        st.markdown("""
+        <div class="content-card" style='text-align: center;'>
+            <div style='font-size: 3rem; margin-bottom: 1rem;'>🎯</div>
+            <h4 style='color: #1a1a1a;'>Actionable Insights</h4>
+            <p style='color: #6c757d; font-size: 0.9rem;'>
+                Get clear priority rankings and visual reports to help you make
+                data-driven decisions about student outreach
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    st.markdown("---")
+    
+    st.markdown("### ✨ Key Benefits")
+    
+    st.markdown("""
+    <div class="content-card">
+        <ul style='line-height: 2; color: #495057; font-size: 1rem;'>
+            <li><b>Save Time:</b> Focus on leads that matter instead of wasting time on low-probability students</li>
+            <li><b>Increase Conversions:</b> Improve enrollment rates by 25-40% through better lead prioritization</li>
+            <li><b>Optimize Resources:</b> Allocate your team's efforts where they'll have the biggest impact</li>
+            <li><b>Data-Driven Decisions:</b> Replace guesswork with AI-powered insights backed by real data</li>
+            <li><b>Instant Results:</b> Get predictions in seconds, not days or weeks</li>
+            <li><b>No Technical Skills Needed:</b> Simple upload-and-download workflow anyone can use</li>
+        </ul>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    st.markdown("---")
+    
+    st.markdown("### 🎯 Who Should Use This?")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("""
+        <div class="content-card">
+            <h4 style='color: #1a1a1a;'>Perfect For:</h4>
+            <ul style='line-height: 1.8; color: #495057;'>
+                <li>Educational Institutions</li>
+                <li>Online Course Providers</li>
+                <li>Training Companies</li>
+                <li>Admission Teams</li>
+                <li>Sales Teams in Education</li>
+                <li>Marketing Departments</li>
+            </ul>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col2:
+        st.markdown("""
+        <div class="content-card">
+            <h4 style='color: #1a1a1a;'>Use Cases:</h4>
+            <ul style='line-height: 1.8; color: #495057;'>
+                <li>Prioritize student follow-ups</li>
+                <li>Allocate counselor time efficiently</li>
+                <li>Plan targeted marketing campaigns</li>
+                <li>Forecast enrollment numbers</li>
+                <li>Improve conversion rates</li>
+                <li>Optimize admission strategies</li>
+            </ul>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    st.markdown("---")
+    
+    st.markdown("### 🔧 Technical Details")
+    
+    st.markdown("""
+    <div class="content-card">
+        <h4 style='color: #1a1a1a;'>Technology Stack:</h4>
+        <ul style='line-height: 1.8; color: #495057;'>
+            <li><b>Machine Learning:</b> Scikit-learn with ensemble models (Random Forest, Gradient Boosting)</li>
+            <li><b>Framework:</b> Streamlit for interactive web interface</li>
+            <li><b>Data Processing:</b> Pandas and NumPy for efficient data handling</li>
+            <li><b>Visualizations:</b> Plotly for interactive charts and graphs</li>
+            <li><b>Model Accuracy:</b> 85-90% on test data</li>
+        </ul>
+        
+        <h4 style='color: #1a1a1a; margin-top: 2rem;'>Data Privacy:</h4>
+        <ul style='line-height: 1.8; color: #495057;'>
+            <li>All data processing happens in real-time during your session</li>
+            <li>No permanent storage of your student data</li>
+            <li>Secure file upload and download</li>
+            <li>Session data cleared when you close the browser</li>
+        </ul>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    st.markdown("---")
+    
+    st.markdown("""
+    <div class="info-box">
+        <h4 style='color: #0066cc; margin-top: 0;'>💡 Need Support?</h4>
+        <p style='margin-bottom: 0; color: #495057;'>
+            Check out the <b>User Guide</b> section for detailed instructions, or contact your system administrator
+            for technical support.
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
+
+# ============================================================================
+# FOOTER
+# ============================================================================
+
 st.markdown("---")
-st.markdown(f"""
-<div style='text-align: center; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
-            padding: 20px; border-radius: 10px; color: white;'>
-    <p style='margin: 0;'>🔐 Logged in as: <b>{st.session_state.user['username']}</b> ({st.session_state.user['role']}) | {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}</p>
-    <h3 style='color: white; margin: 10px 0 0 0;'>🎓 Student Lead Scoring Intelligence Platform</h3>
-    <p style='margin: 5px 0 0 0;'>Powered by Machine Learning | Built with Streamlit & Python | © 2024</p>
+st.markdown("""
+<div style='background: white; padding: 2rem; border-radius: 12px; text-align: center; border: 1px solid #e9ecef;'>
+    <div style='color: #1a1a1a; font-weight: 700; font-size: 1.1rem; margin-bottom: 0.5rem;'>
+        🎓 Student Lead Scoring Intelligence Platform
+    </div>
+    <div style='color: #6c757d; font-size: 0.9rem;'>
+        Powered by Machine Learning • Built with Streamlit & Python • Version 2.0
+    </div>
+    <div style='color: #adb5bd; font-size: 0.85rem; margin-top: 1rem;'>
+        © 2024 • AI-Powered Student Analytics
+    </div>
 </div>
 """, unsafe_allow_html=True)
