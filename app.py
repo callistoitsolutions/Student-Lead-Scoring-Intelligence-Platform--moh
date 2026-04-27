@@ -620,9 +620,8 @@ def load_models():
 # ============================================================================
 # PREDICTION FUNCTION
 # ============================================================================
-
 def process_and_predict(df, best_model, scaler, label_encoders):
-    """Process data and generate predictions"""
+    """Process data and generate predictions with unknown category handling"""
     
     expected_cols = list(label_encoders.keys())
     missing_cols = [col for col in expected_cols if col not in df.columns]
@@ -636,10 +635,29 @@ def process_and_predict(df, best_model, scaler, label_encoders):
         df_processed = df_processed.drop(columns=['Converted'])
     
     try:
-        # Encode categorical columns
+        # Encode categorical columns with unknown category handling
         for col in expected_cols:
             if col in df_processed.columns:
-                df_processed[col] = label_encoders[col].transform(df_processed[col].astype(str))
+                # Get the encoder for this column
+                encoder = label_encoders[col]
+                
+                # Convert to string
+                col_values = df_processed[col].astype(str)
+                
+                # Handle unknown categories
+                known_categories = set(encoder.classes_)
+                
+                # Replace unknown categories with the most common category from training
+                # (which is typically at index 0 after fitting)
+                default_category = encoder.classes_[0]
+                
+                # Map unknown values to default
+                col_values = col_values.apply(
+                    lambda x: x if x in known_categories else default_category
+                )
+                
+                # Now transform
+                df_processed[col] = encoder.transform(col_values)
         
         # Scale features
         features_scaled = scaler.transform(df_processed)
@@ -665,6 +683,7 @@ def process_and_predict(df, best_model, scaler, label_encoders):
         
     except Exception as e:
         return None, str(e)
+
 
 # ============================================================================
 # SIDEBAR
